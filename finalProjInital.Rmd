@@ -6,7 +6,7 @@ output: html_notebook
 # Notebook Setup
 
 ```{r echo=FALSE}
-setwd("C:\\Users\\levil\\OneDrive\\Documents\\Data Science\\594 Time Series Econometrics\\FinalProj")
+setwd("Time-Series-Econnometrics-FinalProject")
 ```
 
 ```{r echo=FALSE}
