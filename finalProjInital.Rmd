@@ -1,0 +1,365 @@
+---
+title: "Start of final project"
+output: html_notebook
+---
+
+# Notebook Setup
+
+```{r echo=FALSE}
+setwd("C:\\Users\\levil\\OneDrive\\Documents\\Data Science\\594 Time Series Econometrics\\FinalProj")
+```
+
+```{r echo=FALSE}
+library(dplyr)
+require(quantmod)
+require(forecast)
+require(fBasics)
+require(CADFtest)
+require(urca)
+require(sandwich)
+require(lmtest)
+require(nlme)
+require(MTS)
+require(car)
+require(strucchange)
+require(vars)
+require(forecast)
+```
+
+
+These results are really quite strange and I wouldn't entirely know how to include this in my final model correctly. So we are going to change the indexing of our final model. For my final project I have some snow data that I am going to compare these variables too. That data starts in 2008-12-31 and ends at 2017-03-30. So these will be our new start and end dates. I feel most of the issues that would arise from this model especially in relation to break points probably comes from what happened around covid as well so I feel this smaller section will be much better to work with.
+
+```{r}
+startdate = "2009-12-01"
+enddate = "2017-01-02"
+```
+
+calculate new first difference and returns
+
+For our relationship calculations we are going to try to model the Vail resorts stock.
+response:
+mtn
+
+predictors:
+cOil <- general economy and driving predictor
+snowfall <- average snow fall accross my multiple resorts
+T10YIE <- 10y breakeven inflation Rate
+
+loading in snowfall data csvs
+```{r}
+#have to keep these seprate intially as the dates don't match up
+jackson <- read.csv("archive//Jackson Hole - Wyoming.csv")
+snowbird <- read.csv("archive//Snowbird - Utah.csv")
+telluride <- read.csv("archive//Telluride - Colorado.csv")
+whistler <- read.csv("archive//Whistler Blackcomb - BC Canada.csv")
+
+
+```
+
+Were going to have to do alot of cleaning because snow dataset does not report days that there is 0 just days that there is snow. Snow depth is in cm as well includes cm in the name for some reason which is going to make it a bitch to read in.
+
+```{r}
+#cutting out cm part of file
+jackson$jacksonSnow <- as.numeric(gsub("[^0-9.]", "", jackson$X24.hr.New.Snow ))
+snowbird$snowbirdSnow <- as.numeric(gsub("[^0-9.]", "", snowbird$X24.hr.New.Snow ))
+telluride$tellurideSnow <- as.numeric(gsub("[^0-9.]", "", telluride$X24.hr.New.Snow ))
+whistler$whistlerSnow <- as.numeric(gsub("[^0-9.]", "", whistler$X24.hr.New.Snow ))
+
+#converting values to datetimes
+jackson$Date <- as.POSIXct(jackson$Date, format = "%d-%b-%y")
+snowbird$Date <- as.POSIXct(snowbird$Date, format = "%d-%b-%y")
+telluride$Date <- as.POSIXct(telluride$Date, format = "%d-%b-%y")
+whistler$Date <- as.POSIXct(whistler$Date, format = "%d-%b-%y")
+
+#Combining Snowfalls into one dataset full join because want NA's where values are missing
+snowfall <- jackson[c("Date", "jacksonSnow")] %>%
+  full_join(snowbird[c("Date","snowbirdSnow")], by = join_by(Date)) %>%
+  full_join(telluride[c("Date","tellurideSnow")], by = join_by(Date)) %>%
+  full_join(whistler[c("Date","whistlerSnow")], by = join_by(Date)) 
+
+#replace NA's with 0's because that means it snowed 0 cm at these places
+snowfall <- replace(snowfall, is.na(snowfall), 0)
+snowfall$Dates <- snowfall$Date
+snowfall$Date <- as.Date(snowfall$Date)
+snowfall <- snowfall[order(snowfall$Date), ]
+```
+
+Now we need to find the range of values or months that this data is over.
+
+
+```{r}
+startTemp <- as.Date(startdate)
+endTemp <- as.Date(enddate)
+
+#All dates between start and end
+dateBetween <- seq(startTemp, endTemp, by = "1 day")
+
+#overlapping dates
+temp <- data.frame(Date = dateBetween, jargon = 0)
+snowfallFull <- temp %>%
+  full_join(snowfall, by = join_by(Date))
+
+#remove extra col
+snowfallFull <- snowfallFull[, !(names(snowfallFull) %in% c("jargon"))]
+snowfallFull$allSnow <- (snowfallFull$jacksonSnow + snowfallFull$snowbirdSnow + snowfallFull$tellurideSnow + snowfallFull$whistlerSnow)
+
+plotData <- snowfallFull
+#filling in NA's with 0's
+snowfallFull <-  replace(snowfallFull, is.na(snowfallFull), 0)
+```
+
+## Loading stock and Commodities Data
+
+```{r}
+getSymbols("T10YIE",src="FRED")             #10y breakeven inflation 2003-01-02
+getSymbols("MTN")                           #vail resorts Data
+getSymbols("DCOILWTICO", src = "FRED")      #Domestic Crude Oil
+
+#T10YIE doesn't need to be logged
+MTN <- na.omit(window(MTN, start = startdate, end = enddate))
+DCOILWTICO <- na.omit(window(DCOILWTICO, start = startdate, end = enddate))
+T10YIE <- na.omit(window(T10YIE, start = startdate, end = enddate))#don't need to log
+
+mtn <- merge.xts(log(MTN$MTN.Adjusted), log(DCOILWTICO),T10YIE)
+colnames(mtn) <- c("mtn","cOil","T10YIE")
+```
+
+## Basic Idea
+
+The basic Idea that I am going to try to implement is that because the way the seasonality works for the snow fall data. The summers are completely 0 and isn't effected by snowfall. However, I can't just remove the summers completely from the data and test the complete dataset. So I am going to split the data set and test each winter individually. 
+
+We have info on 9 separate winters.
+
+
+```{r}
+plot(plotData$allSnow ~ plotData$Date, ylab = "Combined Snowfall accross 4 resorts")
+```
+
+Going to run each year starting on November 20th which is Thanksgiving weekend and normally the week ski resorts open. Then last week is going to be the end of April. 
+
+splitting the variables into 8 seperate dataframes for each year.
+```{r}
+start <- 2009#date of first year
+winters <- vector(mode='list', length=8)
+# Loop through each year
+for (i in 1:8) {
+  # Define the start and end dates for each time series
+  start_date <- as.Date(paste(as.character(start + i - 1), "-11-20", sep = ""))
+  end_date <- as.Date(paste(as.character(start + i), "-05-01", sep = ""))
+
+  # Subset the original data for the current time series
+  current_time_series <- subset(snowfallFull, snowfallFull$Date >= start_date & snowfallFull$Date <= end_date)
+
+  # Store the current time series in the list
+  winters[[i]] <- current_time_series
+}
+#test
+winters[[1]]
+```
+
+##Data exploration /ARIMA models
+
+
+```{r}
+#Converting to ts oject of returns
+dmtn <- ts(na.omit(diff(mtn)),freq=252, start = 2009)#so they stay the same size remove columns out correctly
+```
+
+going to explore the 10year inflation rate.
+
+```{r}
+ts.plot(mtn$T10YIE)
+```
+Realized I forgot to do use my differenced. However it is then just an AR(3) model which is good.
+```{r}
+T10YIEarima <- auto.arima(mtn$T10YIE)
+summary(T10YIEarima)
+```
+checking autocor
+
+based on the plots bellow feeling pretty good about the autocorrelation. The arima (3,1,0) will work as a final model
+```{r}
+tsdiag(T10YIEarima, gof = 25)
+tsdisplay(residuals(T10YIEarima))
+```
+
+because there is a 1 in the differenced term we are going to difference it one more time then test for stationarity.
+```{r}
+TYI <- na.omit(diff(mtn$T10YIE))
+
+ts.plot(TYI)
+```
+rejecting the null hypothesis good sign going to do the ur.df test now.
+```{r}
+summary(CADFtest(TYI, type="drift"))
+```
+We confirm now that we have a stationary dataset. 
+```{r}
+TYI_df <- ur.df(TYI, type = "drift", lags = 1)
+summary(TYI_df)
+```
+
+##Snow Exploration
+
+going to plot all snow falls onto the same plot. 8 different winters. I got a little lazy and didn't want to figure out how to change the xlabs so its just going to be that for now
+```{r}
+library(lubridate)
+library(viridis)
+
+temp <- as.Date(startdate)
+plot(ts(winters[[1]]$allSnow, start = decimal_date(temp), frequency = 356.25), type = "p",pch = 16, col = viridis(8)[1], ylim = range(-2, 150), main = "Daily Snowfall for years(2009-2017)", ylab = "snowfall in cm accross 4 resorts", xlab = "time November - March")
+for( i in 2:8){
+  points(ts(winters[[i]]$allSnow, start = decimal_date(temp), frequency = 356.25), col = viridis(8)[i], pch = 16)
+}
+
+#return to this because this is annoying me
+# plot(winters[[1]]$allSnow ~ winters[[1]]$Date, type = "p",pch = 16, col = viridis(8)[1], ylim = range(-2, 150), main = "Daily Snowfall for years(2009-2017)", ylab = "snowfall in cm accross 4 resorts", ylab = "time November - March")
+```
+
+going to fit an arima with snowfall including all resorts to see if any have a significant relationship or if 1 resort is more significant than the others.
+
+initial arima model for mtn including our non snowfall variables spanned across the entire time.
+```{r}
+nonSnowModel <- auto.arima(dmtn[,1], xreg = cbind(dmtn[,2], dmtn[,3]))
+summary(nonSnowModel)
+```
+AYY no auto cor issues where just gonna rip this and we can also conclude that both cOil and T10YIE are significant which is cash money.
+```{r}
+tsdiag(nonSnowModel, gof = 25)
+tsdisplay(residuals(nonSnowModel))
+```
+
+Now we need to join the snow data onto this data and we are going to do a partial join because we are just going to drop the weekends from the snow data as there is no trading over the weekends. It would probably be better to put all of the weeknd snow into either friday or monday however I have a deadline and that will take to long for me to do so we are just going to drop them with a partial join
+
+```{r}
+#need to put predictors in a non TS variable so there easier to index
+tempPredictors <- na.omit(diff(mtn)) 
+
+#converting to a df to make easier to work with and attaching the dates
+tempPredictors <- data.frame(index(tempPredictors), tempPredictors)
+
+#changing col names
+colnames(tempPredictors) <- c("Date", "mtn","cOil","T10YIE")
+```
+
+
+```{r}
+#doing left join because we only want to left_join the weekday variables so we want to drop the weekends and this will auto drop
+full_data <- tempPredictors %>%
+  left_join(snowfallFull, by = join_by(Date))
+```
+
+out final dataset that we are going to use to split and fit all of our snow models on.
+```{r}
+#NICE
+full_data <- full_data[,!names(full_data) %in% "Dates"]
+summary(full_data)
+```
+
+so going forward we can say these variables are significant and we can justifying adding them for snow.
+
+## Splitting the predictors into year sections
+```{r}
+start <- 2009#date of first year
+mtnSections <-  vector(mode='list', length=8)
+# Loop through each year
+for (i in 1:8) {
+  # Define the start and end dates for each time series
+  start_date <- as.Date(paste(as.character(start + i - 1), "-11-20", sep = ""))
+  end_date <- as.Date(paste(as.character(start + i), "-05-01", sep = ""))
+
+  # Subset the original data for the current time series
+  current_time_series <- subset(full_data, full_data$Date >= start_date & full_data$Date <= end_date)
+
+  # Store the current time series in the list
+  mtnSections[[i]] <- current_time_series
+}
+#test
+mtnSections[[1]]
+```
+
+Now here we can sort of go two ways. I can fit an arima for each section of the snow data and view each separately which is the better way to go but this will take a while so I might just do the arima fit for around 2 and then do the var on every object.
+
+none of our snows are significant which honestly isn't that surprising I didn't really think any would be but still cool. Jackson is the most significant which is surprising as it isn't even an epic resort.
+```{r}
+predictors1allResorts <- ts(na.omit(mtnSections[[1]][, c("cOil", "T10YIE", "jacksonSnow", "snowbirdSnow", "tellurideSnow", "whistlerSnow")]),freq=252, start = 2009)#so they stay the same size remove columns out correctly
+mtn1 <- ts(na.omit(mtnSections[[1]][, c("mtn")]),freq=252, start = 2009)
+
+snowArima <- auto.arima(mtn1, xreg = predictors1allResorts)
+summary(snowArima)
+```
+
+Now I am going to test it with all of the snow data combined. 
+
+The result is that the predicted value is equal to 0. So all together they don't really have any effect.
+```{r}
+predictors1resortsCombined <- ts(na.omit(mtnSections[[1]][, c("cOil", "T10YIE", "allSnow")]),freq=252, start = 2009)#so they stay the same size remove columns out correctly
+
+snowArima <- auto.arima(mtn1, xreg = predictors1resortsCombined)
+summary(snowArima)
+```
+
+Due to the poor showing on the part of snow in the initial response I am going to create a for loop that is going to fit an ARIMA(2,0,0) on all of the winters. An ARIMA(2,0,0) was choose as it is what was significant without the snowfall. AutoArima isn't going to be used as it is having errors most likely due to the large number of 0's in the snowfall data. 
+
+```{r}
+#number of models
+n <- length(mtnSections)
+snow_models <- vector("list", length = n)
+
+coefs <- matrix(NA, nrow = n, ncol = 12)
+for( i in 1:n){
+  #retreving the data and converting to ts object
+  predictors <- ts(na.omit(mtnSections[[1]][, c("cOil", "T10YIE", "allSnow")]),freq=252, start = 2009)
+  response <- ts(na.omit(mtnSections[[1]][, c("mtn")]),freq=252, start = 2009)
+  
+  #fitting model
+  model <- Arima(response, order = c(2,0,0), xreg = predictors)
+  snow_models[[i]] <- model
+  
+  #saving SE from coefs
+  coefs[i,] <- diag(sqrt(diag(coef(model))))
+}
+```
+So basically none of the snow variables converged so we cannot conclude anything about there fits really
+
+```{r}
+coefs
+```
+lets print out all of there summaries just to be safe
+```{r}
+for(i in 1:n){
+  print(summary(snow_models[[i]]))
+}
+```
+
+Yeah we cannot conclude that there is any relationship between snowfall and Vail resorts stock price. 
+
+## Going forwards
+
+Although we didn't get the result that we were looking for we still definitely learned some stuff. I am really happy with how cOil and Inflation fit to the Vail resorts data and it is definitely worth looking more into that. These makes sense as skiing is extra. People aren't going skiing if they don't have any money so both of these can be used to model how the average person is really doing so it makes sense that there is a relationship. I feel the biggest problem with this model and my process really is the response variable. We are trying to model MTN or vail resorts stock. The problem with doing this is stocks are much more speculative and the information can be reflected in stocks much more randomly. That is why we got a random walk when looking at the vail resorts data. As well there is alot more going on in the vail resorts stock than just skiing. They most likely reinvest there money in the summer trying to turn revenue there. As well people are buying stock on speculation. They are honestly not really overly concerned about the snow especially on a particular day. I was basically trying to see if maybe a big snow would jolt stock investors and more so act as a reminder to buy the stock they already wanted to buy. This is a big stretch by any means. However, if I could get my hands on daily skiers at certain resorts or potential car traffic on a highway like I70. I feel like there would be a good chance of significance. However stock price is just too resilient to be effect by something small like daily snowfall. I feel as though it could be effected by like say a 5 year terrible snow stretch. I do not have examples of this occurring however and some clever macro economic modeling will be required to prove this. 
+
+
+## Fitting the Var
+
+I'm still going to fit a var for just the non snowfall data just for gigs. I really doubt that there is going to any underlying causal relationships
+
+
+
+
+
+
+
+
+
+
+
+```{r}
+ts.plot(dlmtn)
+```
+
+```{r}
+bp_mtn = breakpoints(dlmtn~1)
+breakpoints(bp_mtn)
+summary(bp_mtn)
+plot(bp_mtn)
+```
