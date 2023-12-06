@@ -9,6 +9,8 @@ PROJECT:
   a var model to the data if the ARIMA model was significant to prove causalty. However, there was no realtionship so there was no real 
   point in fitting an ARIMA model.
 
+  Note some analysis of the predictors notably cOil and MTN occurs in hw3 file. I didn't feel like redoing it.
+
 DATA:
   snowfall data was obtained from this link: https://www.kaggle.com/datasets/mrmarjo/resort-daily-snowfall-20092017
   The other data used in the analysis is pulled directly for either Yahoo Finance or FRED directly within the r code using an API.
