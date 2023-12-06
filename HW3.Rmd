@@ -1,0 +1,547 @@
+---
+title: "HW03"
+output:
+  pdf_document: default
+  html_document: default
+date: "2023-11-08"
+---
+
+## Levi Johnson and Logan Rayburn
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+packages
+```{r}
+require(quantmod)
+require(forecast)
+require(fBasics)
+require(CADFtest)
+require(urca)
+# install.packages("sandwich")
+require(sandwich)
+# install.packages("lmtest")
+require(lmtest)
+require(nlme)
+#install.packages("MTS")
+require(MTS)
+require(car)
+# install.packages("strucchange")
+require(strucchange)
+# install.packages("vars")
+require(vars)
+require(forecast)
+```
+
+## Note
+
+  Question 1 is a little jank it took me a little to get everything up and running after there it gets better though
+
+
+## Loading in data sources
+
+Going to model Vail Resorts with 
+
+Daily crude oil price
+Weekly 
+
+I am having lots of issues with the CrudeOil Price not being the same length or having missing values that don't occur in the other ones
+```{r}
+#load in vail resorts
+getSymbols("MTN")
+#National Average weekly gass pri
+getSymbols("GASREGW", src = "FRED")
+getSymbols("DCOILWTICO", src = "FRED")
+#adding Expedia as it is a travel company, going to be used to model travel
+getSymbols("EXPE")
+```
+formatting and getting rid of NA's
+```{r}
+startdate <- "2007-02-01"
+enddate <- "2023-9-29"
+
+VailResorts <- na.omit(window(MTN, start = startdate, end = enddate))
+COil <- na.omit(window(DCOILWTICO, start = startdate, end = enddate))
+Expedia <- na.omit(window(EXPE, start = startdate, end = enddate))
+```
+
+
+```{r}
+
+VailResorts <- log(VailResorts$MTN.Adjusted)
+Expedia <- log(Expedia$EXPE.Adjusted)
+COil <- COil
+#crude Oil went negative one day so there will be a missing value within coil
+par(mfrow = c(3, 1))
+plot(VailResorts)
+plot(COil)
+plot(Expedia)
+```
+
+vailResort:
+
+seems as though there is a trend in the data so case 4.
+```{r}
+plot(log(VailResorts$MTN.Adjusted))
+```
+fail to reject the null hypothesis so go to case 2.
+```{r}
+VailTest <- CADFtest(VailResorts)
+summary(VailTest)
+```
+So according to our DF test we have a random walk with no drift. Im going to assume that Expedia is going to be very similar.
+```{r}
+vail_df <- ur.df(VailResorts,type="trend", lags=1)
+summary(vail_df)
+```
+
+```{r}
+vail_df <- ur.df(VailResorts,type="drift", lags=1)
+summary(vail_df)
+```
+
+According to the dicky fuller test there is a RW with no drift. However, that just looks crazy and after looking at the regression with just an intercept there is a statistcally significant value greater than 0. It is probably just that the RW is so powerful it is overpowering the drift.
+```{r}
+summary(lm(VailResorts ~ 1))
+```
+
+
+Expedia:
+
+```{r}
+plot(Expedia)
+```
+
+```{r}
+Expedia_cadf <- CADFtest(Expedia, criterion = c("BIC"), type = "trend")
+summary(Expedia_cadf)
+```
+gotta go to case 2
+Same results as vail resorts. As well these stocks both follow really similar patterns.
+```{r}
+expedia_df <- ur.df(Expedia,type="drift", lags=1)
+summary(expedia_df)
+```
+
+Expedia is has basically the same the same result as vail resorts. They most likely share the same unit root. I am also going to treat this as a random walk with drift.
+```{r}
+summary(lm(Expedia ~ 1))
+```
+
+Run the cOil Test gonna find a unit root. 
+
+didn't log it this time going to test it before we log it.
+Taking care of the na value after logging. Just replacing it with 0.
+```{r}
+anyNA(COil)
+COil[is.na(COil)] <- 0
+anyNA(COil)
+```
+
+
+```{r}
+plot(COil)
+```
+
+looking at it it doesn't really have a trend so we are just going to do case 2. I logged it initially first and it sort of broke everything. This makes sense as there isn't really a need to log it variable to the data. We accept the null hypothesis with 1 lag so we then go to the second DF test.
+```{r}
+COil_cadf <- CADFtest(COil, criterion = c("BIC"), type = "drift")
+summary(COil_cadf)
+```
+
+we reject both tau2 and phi1 so we have a RW with no drift which is what we would expect.
+```{r}
+COil_df <- ur.df(COil, type="drift", lags=1)
+summary(COil_df)
+```
+
+
+## Most of my Data Points contain a unit root so we are just going to work with daily returns.
+
+if we want to say how to variables that share a unit root long term interact we want to do a cointergration. 
+If we difference a log then we get the return. Which a change in the log is a percent change. So that way whe get the returns. 
+
+this gives us the returns
+```{r}
+#Note COil is missing a value so maybe worth going back and changing how I log it.
+data <- merge.xts(VailResorts, COil, Expedia)
+returns <- diff(data)
+```
+
+
+```{r}
+par(mfrow = c(3, 1))
+
+plot(returns$MTN.Adjusted)
+plot(returns$DCOILWTICO)
+plot(returns$EXPE.Adjusted)
+```
+
+auto.arima with seasonality = TRUE still returns no season elements. This is what we would expect as people are hedging there stocks based on this so the seasonality should be no longer reflected in the stock price. We do get a c(2, 0, 0) so two auto regressive terms.
+```{r}
+Vail1 <- auto.arima(returns$MTN.Adjusted, seasonal=TRUE)
+summary(Vail1)
+```
+
+#Note came back later and edited it to make knit work it was just easier to reload the data and do everything than figure out why it was broken.
+
+
+From what we can see in fitting our fourier terms none of them are statistically significant so we can conclude with pretty solid confidence that there is no season term in our Vail Resorts data. This makes sense as with how people know Vail Resorts brings in a large amount of its income during the winter people hedge on that when buying the stock. So as a result this sort of strips the stock itself of its seasonality.
+```{r}
+startdate <- "2007-02-01"
+enddate <- "2023-10-01"
+
+MTN <- window(MTN, start = startdate, end = enddate)
+temp <-  ts(na.omit(diff(log(MTN$MTN.Adjusted))),freq=252, start = 2007)
+
+auto.arima(temp, xreg=fourier(temp,K=c(4)), seasonal=FALSE)
+```
+Theres auto correlation errors with the ARMA(2,0) Especially with the LJung have multiple significant values. Going to have to check over a larger space.
+```{r}
+tsdiag(Vail1,gof=25)
+tsdisplay(residuals(Vail1))
+```
+
+```{r}
+Vail2 <- Arima(returns$MTN.Adjusted, order = c(2,0,0), include.constant = T)
+summary(Vail2)
+```
+
+```{r}
+tsdiag(Vail2,gof=25)
+tsdisplay(residuals(Vail2))
+```
+just gonna check a large potential size with there being auto cor still in the model. arima(13,0,5) is the final model. Bigger than I like but lets check the residuals.
+```{r eval=FALSE}
+auto.arima(returns$MTN.Adjusted,max.p=15,max.order=100,stepwise=F,trace=T,approximation=F)
+```
+
+large model test from Auto.ARIMA basically has the same auto cor results so were just going to go back to the initial arima(2,0,0).
+```{r}
+vail2 <- Arima(returns$MTN.Adjusted, order = c(13,0,5), include.constant = T)
+```
+
+```{r}
+tsdiag(Vail2,gof=25)
+tsdisplay(residuals(Vail2))
+```
+
+I'm just going to have to go with the base arima(2,0,0) and potential in the future get some more explanatory variables. Most of the auto is gone there is still some though. Some of these plots are concerning however the Unit root is really strong as well as theres probably issues with the structural breaks.
+
+## Expedia
+likes the arima(0,0,0)
+```{r}
+exM1 <- auto.arima(returns$EXPE.Adjusted)
+summary(exM1)
+```
+This ones got a bit more auto core were gonna look for a little more complex model.
+```{r}
+tsdiag(exM1,gof=25)
+tsdisplay(residuals(exM1))
+```
+final model ARIMA(6,0,5) little more complex. Didn't let is search as far. See if there is issues with auto cor.
+```{r eval=F}
+auto.arima(returns$MTN.Adjusted,max.p=7,max.order=100,stepwise=F,trace=T,approximation=F)
+```
+
+```{r}
+exM2 <- Arima(returns$MTN.Adjusted, order = c(6,0,5), include.constant = T)
+```
+
+The Residuals are much better here. A little sus with the third lag but looks pretty good.
+```{r}
+tsdiag(exM2,gof=25)
+tsdisplay(residuals(exM2))
+```
+
+gonna roll with this model for Expedia
+
+# COil
+
+pretty long equation for base auto.arima there is definitely auto core issues however I feel it mostly stems from the 1 value that goes negative so I feel as though it stems from a structural break from covid. So I am just going to test all of my answers for structural breaks by doing question 2. These Standard errors seem as though they are seasonal.
+```{r}
+COilM <- auto.arima(returns$DCOILWTICO)
+```
+
+```{r}
+tsdiag(COilM,gof=25)
+tsdisplay(residuals(COilM))
+```
+
+## Question 2
+
+My data and everything has become so messed up I am just going to reload everything and resubset it knowing what we know now.
+
+```{r}
+rm(list = ls())
+```
+
+There was way to much going on in my other notebook so I'm just going to do question 2 from a clean slate.
+
+
+```{r}
+#load in vail resorts
+getSymbols("MTN")
+#National Average weekly gass pri
+#getSymbols("GASREGW", src = "FRED")
+getSymbols("DCOILWTICO", src = "FRED")
+#adding Expedia as it is a travel company, going to be used to model travel
+getSymbols("EXPE")
+
+startdate <- "2007-02-01"
+enddate <- "2023-10-01"
+
+MTN <- window(MTN, start = startdate, end = enddate)
+DCOILWTICO <- window(DCOILWTICO, start = startdate, end = enddate)
+EXPE <- window(EXPE, start = startdate, end = enddate)
+```
+
+```{r}
+mtn <- merge.xts(MTN$MTN.Adjusted,EXPE$EXPE.Adjusted, DCOILWTICO,join="inner")
+VailData <- mtn
+plot(VailData)
+
+vailData <- na.omit(VailData)
+```
+
+
+```{r}
+temp <- ts(na.omit(diff(log(VailData))),freq=252, start = 2007)#so they stay the same size remove columns out correctly
+
+vResorts = temp[,1]
+Expedia = temp[,2]
+COil = temp[,3]
+```
+different lengths probably because of the NA values from logging COil. Going to need to go in and make some changes especially to variable length.
+
+both predictors are significant
+```{r}
+basicreg <- lm(temp[,1] ~ temp[,2] + temp[,3])
+#summary(basicreg)
+```
+There is definite auto correlation within the residuals you might be able to say that it is at season values but I wouldn't be completely confident on that.
+```{r}
+tsdisplay(residuals(basicreg))
+```
+Because there is no lagged dependent variables were just gonna use HAC standard errors.
+
+Both expedia and Crude Oil are still significant even after using HAC standard errors.
+```{r}
+coeftest(basicreg,vcov=vcovHAC(basicreg))
+```
+
+# Question:
+
+I will be looking for a break in the regression coefficients of vail Resorts. I am first going to look for breaks then fit a dynamic model with breaks if they exist.
+
+Bai and Perron test:
+```{r}
+bp_vResorts = breakpoints(vResorts ~ Expedia + COil)
+breakpoints(bp_vResorts)
+```
+
+```{r}
+summary(bp_vResorts)
+```
+
+
+```{r}
+bp_vResorts
+```
+```{r}
+plot(bp_vResorts)
+```
+
+The Bai and Perron test detects 2 structural breaks. 
+
+The Recursive estimate does not detect any structural break however the residual sum test does detect a structural break:
+```{r}
+efptest.sum <- efp(temp[,1]~temp[,2] + temp[,3],type="Rec-MOSUM")
+plot(efptest.sum)
+sctest(efptest.sum)
+```
+```{r}
+efptest.est <- efp(vResorts~ Expedia + COil,type="RE",rescale=TRUE)
+plot(efptest.est)
+plot(efptest.est,functional=NULL)
+```
+The RE test more closely agrees with what I assumed would occur in our data set. Where we thought that there would be structural breaks for 
+```{r}
+efptest.est
+```
+
+We are going to go with two structural breaks which is what the Bai and Perron test says as well as the RE Test
+
+```{r}
+structural.model <- dynlm(vResorts ~ breakfactor(bp_vResorts, breaks = 2)/(Expedia + COil))
+summary(structural.model)
+```
+
+There are two break points in this model. The first occurs in 2011 and the second ones occurs in 2019. I would have to some more research on why the structural break occured in 2011 my inital guess would be something with global warming however I would not be overly confident in that.Looking at the model however it seems to stabelize more after that point so maybe it is a increase in stabilization within the stock. For the second it is at the start of covid and all resorts and vacation type events were stopped due to covid. This caused a increase in volatility in the stock which you can see in the returns.
+```{r}
+plot(vResorts)
+lines(ts(fitted(structural.model), frequency = 252, start = 2007), col = "cyan")
+lines(bp_vResorts, breaks= 2, col = "red",lty = 1 )
+```
+testing the residuals of the final model:
+
+There is definitely some auto correlation still in the model. Especially at the initial residuals. We don't have any lags in our model currently however as I mainly focused on the structural breaks for this part. The residuals are not overly seasonal however which shows that our intial differensing in seasonality is still correct taking into our tests for seasonality. In the interest of getting this assignment done at a reasonable time I am going to move on as this being my current model. I understand that I should look for some lags. I will test a simple model with 2 ar terms just to see but I am not going to search any more at the moment.
+```{r}
+tsdisplay(residuals(structural.model))
+```
+dynamic model creation 2lags
+```{r}
+dynamic.model <- dynlm(vResorts ~ L(vResorts, 1:2) + breakfactor(bp_vResorts, breaks = 2)/(Expedia + COil))
+summary(dynamic.model)
+```
+
+checking for auto cor.
+
+There is still auto cor which I have really been struggling to get rid of in these data sets. I am just going to move on for now in the interest of time. For my final project I will find a much better way to eliminate auto cor.
+```{r}
+tsdisplay(residuals(dynamic.model))
+
+```
+
+Final model equation: I didn't change the dates into the actual dates or the numbers in t that they would have to be I just left them as the values from the breakpoints test.
+
+$$(1 - L)(1 - L^2)log(VailResorts) = -.0002116 - 0.0002251(1 - L) - 0.0002251(1-L^2) + (t < (2011) + 224)(0.4774390*Expedia + 0.1155955 * COil) + (t <= (2011) + 224 < 2019(250))(0.0010836 + .1445337*Expedia + .0230579*COil) + (t <= 2019(250))(0.0003298 + 0.4375515*Expedia - 0.0197122*COil) + a_t $$
+
+the dynamic model still doesn't catch the dip near around the start of 2019 which is unfortunate.
+```{r}
+plot(vResorts)
+lines(ts(fitted(structural.model), frequency = 252, start = 2007), col = "cyan")
+lines(ts(fitted(dynamic.model), frequency = 252, start = 2007), col = "green")
+lines(bp_vResorts, breaks= 2, col = "red",lty = 1 )
+```
+
+
+## Question 4
+
+Based on how we were unable to eliminate auto cor in our old model as well as the prevalence of break points we are going to change the indexing of our final model. For my final project I have some snow data that I am going to compare these variables too. That data starts in 2008-12-31 and ends at 2017-03-30. So these will be our new start and end dates. I feel most of the issues that would arise from this model especially in relation to break points probably comes from what happened around covid as well so I feel this smaller section will be much better to work with.
+
+```{r}
+startdate = "2008-12-31"
+enddate = "2017-03-30"
+```
+
+calculate new first difference and returns
+```{r}
+mtn <- window(mtn, start = startdate, end = enddate)
+dlmtn <- ts(na.omit(diff(log(mtn$MTN.Adjusted))), freq=252, start = 2008)
+dlexp <- ts(na.omit(diff(log(mtn$EXPE.Adjusted))), freq=252, start = 2008)
+dcOil <- ts(na.omit(diff(log(mtn$DCOILWTICO))), freq=252, start = 2008)#we are going to logcOil as if you do you can treat it more as a stationary arima 
+          #which is easier to work with than a random walk with drift
+```
+
+
+```{r}
+ts.plot(dlmtn)
+```
+now we get zero break points which is what we want.
+```{r}
+bp_mtn = breakpoints(dlmtn~1)
+breakpoints(bp_mtn)
+summary(bp_mtn)
+plot(bp_mtn)
+```
+with the other variables taken into consideration we have 1 break point. Probably the 2011 break point that we had in the more complex model.
+```{r}
+bp_mtn = breakpoints(dlmtn~dlexp + dcOil)
+breakpoints(bp_mtn)
+summary(bp_mtn)
+plot(bp_mtn)
+```
+
+Now we are going to conduct a var on the data
+
+```{r}
+veo <- cbind(dlmtn, dlexp, dcOil)
+plot(veo)
+summary(veo)
+```
+selecting lag length
+
+I'm going to go with the larger number of lags just because I feel like there should be more lags in the data based on my earlier analysis. So we are going to use AIC which thinks 3 lags.
+AIC and FPE = 3, HQ and SC = 1
+```{r}
+VARselect(veo, lag.max = 15, type = "none")
+```
+creating the VAR model with 3 lags
+```{r}
+varvoe <- VAR(veo, lag.max = 13, type ="none",ic="FPE")
+varvoe
+```
+
+Estimations of var in a vector system
+
+$$mtn_t = -0.010529mtn_{t-1} + 0.023307exp_{t-1} + 0.012859COil_{t-1} -0.115375mtn_{t-2} + 0.003692exp_{t-2} + 0.037083COil_{t-2} -0.047581mtn_{t-3} + 0.016464exp_{t-3} - 0.008654COil_{t-3}$$
+$$exp_t = -0.05044mtn_{t-1} + 0.02582exp_{t-1} -0.02525COil_{t-1} -0.03656mtn_{t-2} -0.02224exp_{t-2} + 0.04950COil_{t-2} + 0.05096mtn_{t-3} -0.02167exp_{t-3} -0.04600COil_{t-3}$$
+$$COil_t = 0.0122560mtn_{t-1} + 0.0001837exp_{t-1} -0.0417598COil_{t-1} -0.0376620mtn_{t-2} + 0.0389318exp_{t-2} + -0.0256571COil_{t-2} -0.0382759mtn_{t-3} -0.0252775exp_{t-3} + 0.0032643COil_{t-3}$$
+my kniting was breaking doing the fancy matrix for these variables. However this should be in a matrix together so
+
+$$y_t = matrix(mtn_t,exp_t,COil_t)$$
+
+```{r}
+summary(varvoe)
+```
+
+cannot plot in a markdown to big but you can just plot in terminal so this plot isn't in the markdown itself but I looked at in in the terminal. Bellow is my attempt to plot 1 of them maybe it will be complete on the markdown not entierly sure.
+dlmtn - really good no probs with auto
+dlexp - same no issue
+dcOil - same
+all residuals and auto looks good.
+
+A couple sightly significant lags for PACF and seasonal looking residuals auto cor for afc however neither to concerning really.
+```{r}
+#cannot plot this it breaks my markdown
+#plot(varvoe, name = "dlmtn")
+acf(varvoe$varresult$dlmtn$residuals,main="mtn equation residuals")
+pacf(varvoe$varresult$dlmtn$residuals,main="mtn equation residuals")
+```
+No issues with auto cor so we are just going to go with this model
+
+
+# Granger Causality
+
+investigating relationship testing for causality of oil on the other markets. This would be interesting as this is our economic variable so we would expect expensive oil to hurt both of the other markets.
+
+I do not reject the null of there being no causality of crude oil on the other variables (mtn and exp)
+```{r}
+roots(varvoe)
+causality(varvoe, cause="dcOil")
+#causality(varvoe, cause="dlexp")
+```
+
+## 4b)
+
+```{r}
+serial.test(varvoe, lags.pt = 16)
+```
+From the plot we cannot really determine any impulse responses or causal relationships within the data. All that I really can see is that there is an negative response in Expedia stock 2 days after the initial shock then dying out. We cannot conclude any causal relationships between these variables.There is a positive relationship for the current time period for an Expedia shock and crude oil. 
+
+```{r}
+plot(irf(varvoe,n.ahead=12,ortho=F,impulse = "dlexp"))
+plot(irf(varvoe,n.ahead=12,ortho=T,impulse = "dlexp"))
+```
+
+```{r}
+plot(irf(varvoe,n.ahead=12,ortho=F,impulse = "dcOil"))
+plot(irf(varvoe,n.ahead=12,ortho=T,impulse = "dcOil"))
+```
+
+The non-orthogonalized response of differenced crude oil says that for a one-time, one unit increase in the real crude oil predicts that we wont see any change in either returns for Expedia or returns for Vail resorts, in the second period. In this case two days later. For non of the variables do we see a causal relationship in any period except for one case where there is one in the current time period. From this however we can conclude if there is a one percent increase in Expedia stock there is normally a 0.002588979 increase in differenced dcOil occurring at the same time which then dies out after that period.
+
+
+```{r}
+temp <- irf(varvoe,n.ahead=12,ortho=T,impulse = "dlexp",response="dcOil")
+temp$irf$dlexp[1,]
+```
+
+
+
+
+
+
+

@@ -1,12 +1,14 @@
 ---
 title: "Start of final project"
-output: html_notebook
+output:
+  pdf_document: default
+  html_notebook: default
 ---
 
 # Notebook Setup
 
 ```{r echo=FALSE}
-setwd("Time-Series-Econnometrics-FinalProject")
+setwd("C:\\Users\\levil\\OneDrive\\Documents\\Data Science\\594 Time Series Econometrics\\FinalProj")
 ```
 
 ```{r echo=FALSE}
@@ -121,6 +123,7 @@ DCOILWTICO <- na.omit(window(DCOILWTICO, start = startdate, end = enddate))
 T10YIE <- na.omit(window(T10YIE, start = startdate, end = enddate))#don't need to log
 
 mtn <- merge.xts(log(MTN$MTN.Adjusted), log(DCOILWTICO),T10YIE)
+
 colnames(mtn) <- c("mtn","cOil","T10YIE")
 ```
 
@@ -157,9 +160,41 @@ for (i in 1:8) {
 winters[[1]]
 ```
 
+
 ##Data exploration /ARIMA models
 
+#snowfall
 
+```{r}
+winter2010 <- ts(winters[[2]]$allSnow, start = 1)
+plot(winter2010, type = "l", main = "total snowfall in cm for winter 2010")
+```
+seeing if there is auto cor. Assume there will be.
+
+Honestly there isn't really as much as I thought
+```{r}
+acf(winter2010)
+pacf(winter2010)
+```
+
+Simple MA(1) - moving average model
+```{r}
+auto.arima(winter2010)
+```
+
+```{r}
+winter2010Model <- Arima(winter2010, order = c(0,0,1))
+summary(winter2010Model)
+```
+I feel that this is a pretty good model for this as well as it shows this data can be stationary and useful. No real need to difference or log.
+```{r}
+tsdiag(winter2010Model, gof = 25)
+tsdisplay(residuals(winter2010Model))
+```
+
+
+
+#other predictors
 ```{r}
 #Converting to ts oject of returns
 dmtn <- ts(na.omit(diff(mtn)),freq=252, start = 2009)#so they stay the same size remove columns out correctly
@@ -343,23 +378,65 @@ Although we didn't get the result that we were looking for we still definitely l
 
 I'm still going to fit a var for just the non snowfall data just for gigs. I really doubt that there is going to any underlying causal relationships
 
-
-
-
-
-
-
-
-
-
-
 ```{r}
-ts.plot(dlmtn)
+require(vars)
+```
+
+going to go with 1 lag.
+```{r}
+mtn <- na.omit(mtn)
+VARselect(mtn, lag.max = 15, type = "none")
 ```
 
 ```{r}
-bp_mtn = breakpoints(dlmtn~1)
-breakpoints(bp_mtn)
-summary(bp_mtn)
-plot(bp_mtn)
+varmtn <- VAR(mtn, lag.max = 13, type ="none",ic="SC")
+varmtn
 ```
+
+```{r}
+summary(varmtn)
+```
+
+slight concerns with the pacf however I am not insanely worried
+```{r}
+acf(varmtn$varresult$mtn$residuals,main="mtn equation residuals")
+pacf(varmtn$varresult$mtn$residuals,main="mtn equation residuals")
+```
+
+#Granger Causality
+
+no real evidence of causality
+```{r}
+roots(varmtn)
+causality(varmtn, cause="T10YIE")
+```
+
+```{r}
+serial.test(varmtn, lags.pt = 16)
+
+```
+Yeah there is no causal relationships that we can find in our data. I feel as though this is mainly derived from Vail resorts being a stock. It is extremely hard to find causal relationships within stock. Due to people normally trade on these suspicions and that differences that out of the stock.
+```{r}
+plot(irf(varmtn,n.ahead=12,ortho=F,impulse = "T10YIE"))
+plot(irf(varmtn,n.ahead=12,ortho=T,impulse = "T10YIE"))
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
